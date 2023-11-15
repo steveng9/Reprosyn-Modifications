@@ -49,31 +49,34 @@ name_of_attack = "BNAF_DOMIAS_ordinalFeaturesOnly"
 verbose = False
 use_solutions = True
 
-data = "main"
-n_runs = 20
+data = "playground"
+n_runs = 1
 
 if not os.path.exists(DATA_DIR + f'{name_of_attack}'):
   os.mkdir(DATA_DIR + f'{name_of_attack}')
 
 # for gen in ['mst', 'pategan', 'privbayes']:
-#   for eps in [1, 10, 100, 1000]:
-
 for gen in ['pategan']:
-  for eps in [100]:
+    # for eps in [1, 10, 100, 1000]:
+    for eps in [1]:
+        print()
+        print(eps)
 
-    targets = pd.read_csv(DATA_DIR + f"public_data_{data}/{gen}_{eps}_targets.csv")
-    targets_idx = pd.read_csv(DATA_DIR + f"public_data_{data}/{gen}_{eps}_targets_index.txt", names=['hhid'])
-    Y_test = pd.read_csv(DATA_DIR + f"{data}_solutions/{gen}_{eps}.txt", names=['membership'])['membership'] if use_solutions else [0]*targets_idx.shape[0]
-    targets_idx['actual'] = Y_test
-    targets_hhid = targets['hhid']
+        targets = pd.read_csv(DATA_DIR + f"public_data_{data}/{gen}_{eps}_targets.csv")
+        targets_idx = pd.read_csv(DATA_DIR + f"public_data_{data}/{gen}_{eps}_targets_index.txt", names=['hhid'])
+        Y_test = pd.read_csv(DATA_DIR + f"{data}_solutions/{gen}_{eps}.txt", names=['membership'])['membership'] if use_solutions else [0]*targets_idx.shape[0]
+        targets_idx['actual'] = Y_test
+        targets_hhid = targets['hhid']
 
-    targets_encoded = load_artifact(f"{data}_{gen}_{eps}_BNAF_targets_encoded")
-    target_results_synth = np.array([0.0] * targets.shape[0])
-    target_results_base = np.array([0.0] * targets.shape[0])
+        targets_encoded = load_artifact(f"{data}_{gen}_{eps}_BNAF_targets_encoded_allfeatures")
+        target_results_synth = np.array([0.0] * targets.shape[0])
+        target_results_base = np.array([0.0] * targets.shape[0])
 
-    for i in range(n_runs):
-        p_G_model = load_artifact(f"{data}_{gen}_{eps}_synth_BNAF_model_i{i}")
-        p_R_model = load_artifact(f"{data}_{gen}_{eps}_base_BNAF_model_i{i}")
+        # for i in range(n_runs):
+        #     p_G_model = load_artifact(f"{data}_{gen}_{eps}_synth_BNAF_model_i{i}")
+        #     p_R_model = load_artifact(f"{data}_{gen}_{eps}_base_BNAF_model_i{i}")
+        p_G_model = load_artifact(f"{data}_{gen}_{eps}_synth_BNAF_model_allfeatures")
+        p_R_model = load_artifact(f"{data}_{gen}_{eps}_base_BNAF_model_allfeatures")
 
         p_G_evaluated = np.exp(
             compute_log_p_x(p_G_model, torch.as_tensor(targets_encoded).float().to('cpu'))
@@ -89,11 +92,17 @@ for gen in ['pategan']:
             .numpy()
         )
 
-        p_R_evaluated = np.nan_to_num(p_R_evaluated, nan=1e26)
-        p_G_evaluated = np.nan_to_num(p_G_evaluated, nan=1e26)
 
-        p_R_evaluated[p_R_evaluated == 0] = 1e26
-        p_G_evaluated[p_G_evaluated == 0] = 1e26
+        p_G_evaluated = np.nan_to_num(p_G_evaluated, nan=1e26)
+        p_G_evaluated[np.isinf(p_G_evaluated)] = 1e26
+        p_R_evaluated = np.nan_to_num(p_R_evaluated, nan=1e26)
+        p_R_evaluated[np.isinf(p_R_evaluated)] = 1e26
+
+        print(p_G_evaluated)
+
+        #
+        # p_R_evaluated[p_R_evaluated == 0] = 1e-26
+        # p_G_evaluated[p_G_evaluated == 0] = 1e-26
 
         # # density_gen = stats.gaussian_kde(synth_set.transpose(1, 0))
         # # density_data = stats.gaussian_kde(reference_set.transpose(1, 0))
@@ -101,24 +110,28 @@ for gen in ['pategan']:
         # # p_R_evaluated = density_data(X_test.transpose(1, 0))
 
 
-        target_results_synth += p_R_evaluated
-        target_results_base += p_G_evaluated
+        # target_results_synth += p_R_evaluated
+        # target_results_base += p_G_evaluated
 
-        p_rel = p_R_evaluated / p_G_evaluated
+        p_rel = p_G_evaluated / p_R_evaluated
+        p_rel[np.isinf(p_rel)] = 1e26
+
+        # print(p_rel)
 
         scores = pd.DataFrame({
             "hhid": targets_hhid,
             "p_rel": pd.Series(p_rel)
         })
 
-        # scores["prob"] = activate_3(scores["p_rel"])
+        scores["p_rel"] = activate_3(scores["p_rel"])
 
         final_scores = []
         households = scores.groupby("hhid")
         for target_hhid in targets_idx['hhid'].values.tolist():
             final_scores.append(households.get_group(target_hhid).p_rel.mean())
+        final_scores = np.array(final_scores)
 
-        final_scores = activate_3(np.array(final_scores), confidence=1)
+        # final_scores = activate_3(np.array(final_scores), confidence=1)
         # np.savetxt(DATA_DIR + f'{name_of_attack}/{gen}_{eps}.txt', final_scores, fmt="%.8f")
 
         if verbose:
@@ -131,41 +144,40 @@ for gen in ['pategan']:
         if use_solutions:
             weights = 2 * np.abs(0.5 - final_scores)
             ma = membership_advantage(Y_test, final_scores > 0.5, sample_weight=weights)
-            print(i, ma)
+            print(ma)
 
         if verbose: print()
-        if verbose: print(pd.Series(final_scores).describe())
 
-
-    ## AVERAGE MANY RUNS
-    p_rel = target_results_synth / target_results_base
-
-    scores = pd.DataFrame({
-        "hhid": targets_hhid,
-        "p_rel": pd.Series(p_rel)
-    })
-
-    # scores["prob"] = activate_3(scores["p_rel"])
-
-    final_scores = []
-    households = scores.groupby("hhid")
-    for i, target_hhid in enumerate(targets_idx['hhid'].values.tolist()):
-      final_scores.append(households.get_group(target_hhid).p_rel.mean())
-
-    final_scores = activate_3(np.array(final_scores), confidence=1)
-    # np.savetxt(DATA_DIR + f'{name_of_attack}/{gen}_{eps}.txt', final_scores, fmt="%.8f")
-
-    if verbose:
-      bins = np.linspace(0, 1, 50)
-      pyplot.hist(final_scores, bins)
-      pyplot.legend(loc='upper right')
-      pyplot.title(f"epsilon ~ {eps}")
-      pyplot.show()
-
-    if use_solutions:
-        weights = 2 * np.abs(0.5 - final_scores)
-        ma = membership_advantage(Y_test, final_scores > 0.5, sample_weight=weights)
-        print(ma)
-
-    if verbose: print()
-    if verbose: print(pd.Series(final_scores).describe())
+        #
+        # ## AVERAGE MANY RUNS
+        # p_rel = target_results_synth / target_results_base
+        #
+        # scores = pd.DataFrame({
+        #     "hhid": targets_hhid,
+        #     "p_rel": pd.Series(p_rel)
+        # })
+        #
+        # # scores["prob"] = activate_3(scores["p_rel"])
+        #
+        # final_scores = []
+        # households = scores.groupby("hhid")
+        # for i, target_hhid in enumerate(targets_idx['hhid'].values.tolist()):
+        #     final_scores.append(households.get_group(target_hhid).p_rel.mean())
+        #
+        # final_scores = activate_3(np.array(final_scores), confidence=1)
+        # # np.savetxt(DATA_DIR + f'{name_of_attack}/{gen}_{eps}.txt', final_scores, fmt="%.8f")
+        #
+        # if verbose:
+        #     bins = np.linspace(0, 1, 50)
+        #     pyplot.hist(final_scores, bins)
+        #     pyplot.legend(loc='upper right')
+        #     pyplot.title(f"epsilon ~ {eps}")
+        #     pyplot.show()
+        #
+        # if use_solutions:
+        #     weights = 2 * np.abs(0.5 - final_scores)
+        #     ma = membership_advantage(Y_test, final_scores > 0.5, sample_weight=weights)
+        #     print(ma)
+        #
+        # if verbose: print()
+        # if verbose: print(pd.Series(final_scores).describe())
